@@ -11,7 +11,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Conversation, Message, utc_now
+from app.models import Conversation, Message, User, utc_now
 
 
 # SQL 等价语句：
@@ -242,3 +242,93 @@ def list_messages(
         .limit(limit)
     )
     return list(db.scalars(stmt).all()), total
+
+
+# ============================================================================
+# 用户（示范：原 app/routers/auth.py 里手写的 ORM 查询收到这一层）
+# ============================================================================
+def get_user_id_by_username(db: Session, username: str) -> int | None:
+    """按用户名查 id（注册查重专用）。
+
+    SQL 等价语句：SELECT id FROM users WHERE username = ? LIMIT 1;
+
+    只取 id 不取整行：查重只需要"存在与否"，把 hashed_password、email
+    读进内存再丢掉，属于给自己增加泄露面。
+
+    Args:
+        db: 数据库会话。
+        username: 待查用户名（区分大小写，与数据库唯一约束一致）。
+
+    Returns:
+        int | None: 已存在则返回其 id，否则 None。
+    """
+    return db.scalar(select(User.id).where(User.username == username))
+
+
+def get_user_id_by_email(db: Session, email: str) -> int | None:
+    """按邮箱查 id（注册查重专用）。
+
+    SQL 等价语句：SELECT id FROM users WHERE email = ? LIMIT 1;
+
+    调用方必须先把邮箱转小写：数据库唯一约束是大小写敏感的。
+
+    Args:
+        db: 数据库会话。
+        email: 已归一化（小写）的邮箱。
+
+    Returns:
+        int | None: 已存在则返回其 id，否则 None。
+    """
+    return db.scalar(select(User.id).where(User.email == email))
+
+
+def get_user_by_login(db: Session, identifier: str) -> User | None:
+    """按"用户名或邮箱"取用户（登录专用）。
+
+    SQL 等价语句：
+        SELECT * FROM users WHERE username = ? LIMIT 1;
+        SELECT * FROM users WHERE email = ? LIMIT 1;   -- 第一条没命中时
+
+    刻意不写成 `WHERE username = ? OR email = ?`：不同列上的 OR 会让
+    优化器放弃单列索引，两个条件都得回表扫。两次走索引的单行查询更快。
+
+    Args:
+        db: 数据库会话。
+        identifier: 表单里的 username 字段，可能是用户名也可能是邮箱。
+
+    Returns:
+        User | None: 命中则返回 ORM 对象（含 hashed_password，供路由校验）。
+    """
+    user = db.scalar(select(User).where(User.username == identifier))
+    if user is None:
+        user = db.scalar(select(User).where(User.email == identifier.lower()))
+    return user
+
+
+def create_user(db: Session, *, username: str, email: str, hashed_password: str) -> User:
+    """插入新用户并提交。
+
+    SQL 等价语句：
+        INSERT INTO users (username, email, hashed_password, is_active, created_at)
+        VALUES (?, ?, ?, 1, ?);
+        SELECT * FROM users WHERE id = ?;   -- refresh 取回自增 id 与默认值
+
+    Note:
+        **不加 try/except**。唯一约束冲突（IntegrityError）必须冒给调用方：
+        只有路由才知道该把它翻译成 409 还是 500（这一层不抛 HTTPException）。
+        调用方捕获后记得 rollback。
+
+    Args:
+        db: 数据库会话。
+        username: 用户名（已通过 Pydantic 校验）。
+        email: 已转小写的邮箱。
+        hashed_password: bcrypt 哈希串，**绝不能**是明文。
+
+    Returns:
+        User: 已提交并 refresh 过的 ORM 对象。
+    """
+    user = User(username=username, email=email, hashed_password=hashed_password)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user

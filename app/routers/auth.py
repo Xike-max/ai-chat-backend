@@ -20,14 +20,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import crud
 from app.auth import create_access_token, hash_password, verify_password
 from app.config import settings
 from app.deps import get_db
-from app.models import User
 from app.schemas import TokenOut, UserCreate, UserOut
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -60,7 +59,7 @@ _DUMMY_HASH = hash_password("dummy-password-for-timing-equalization")
 def register(
     payload: UserCreate,
     db: Annotated[Session, Depends(get_db)],
-) -> User:
+) -> UserOut:
     """创建新用户，返回脱敏后的用户信息。
 
     用普通 ``def`` 而不是 ``async def``：bcrypt 的哈希是**同步 CPU 密集**操作
@@ -74,8 +73,8 @@ def register(
         db: 数据库会话。
 
     Returns:
-        User: 新建的用户 ORM 对象，经 response_model=UserOut 过滤后输出
-        （hashed_password 不会出现在响应里）。
+        UserOut: 新建用户的对外视图（id / username / email / is_active /
+        created_at），由响应模型按字段白名单序列化，hashed_password 不会出现。
 
     Raises:
         HTTPException: 409，用户名或邮箱已被占用。
@@ -90,28 +89,27 @@ def register(
     # （否则用户只能反复猜），这里接受了这点枚举风险 —— 因为注册接口本身
     # 就必然暴露"某账号是否存在"，这是注册功能无法回避的固有属性。
     # 真要做严格防护，方案是：统一返回 202 + 发确认邮件，让攻击者拿不到即时反馈。
-    if db.scalar(select(User.id).where(User.username == payload.username)) is not None:
+    # 查询本身在 crud（数据访问层），路由只负责判断与翻译状态码。
+    if crud.get_user_id_by_username(db, payload.username) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"用户名 {payload.username!r} 已被占用",
         )
-    if db.scalar(select(User.id).where(User.email == email)) is not None:
+    if crud.get_user_id_by_email(db, email) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="该邮箱已被注册",
         )
 
-    user = User(
-        username=payload.username,
-        email=email,
+    try:
         # 只存哈希。明文密码在这行之后就不再存在于任何地方 ——
         # 不要为了"方便排查"把它打到日志里，日志的留存和访问控制通常比数据库松得多。
-        hashed_password=hash_password(payload.password),
-    )
-    db.add(user)
-
-    try:
-        db.commit()
+        user = crud.create_user(
+            db,
+            username=payload.username,
+            email=email,
+            hashed_password=hash_password(payload.password),
+        )
     except IntegrityError:
         # 上面的两次查询和这次 INSERT 之间存在竞态窗口（两个请求同时注册同名用户）。
         # 应用层的"先查再插"永远不能替代数据库的唯一约束，这里兜住最终防线：
@@ -122,10 +120,7 @@ def register(
             detail="用户名或邮箱已被占用",
         ) from None
 
-    # refresh 把数据库生成的值（自增 id、created_at 默认值）读回对象，
-    # 否则序列化时 id 可能还是 None
-    db.refresh(user)
-    return user
+    return UserOut.model_validate(user)
 
 
 @router.post(
@@ -171,11 +166,9 @@ def login(
 """
     identifier = form.username.strip()
 
-    # 先按用户名查，再按邮箱查。两次都是走索引的单行查询，
-    # 用 or_ 合并成一条反而会让优化器放弃索引（不同列的 OR）。
-    user = db.scalar(select(User).where(User.username == identifier))
-    if user is None:
-        user = db.scalar(select(User).where(User.email == identifier.lower()))
+    # 查询在 crud 层：用户名优先、邮箱兜底，两次都是走索引的单行查询。
+    # 路由这里只负责"查不到/密码错/被禁用 → 统一 401"的翻译。
+    user = crud.get_user_by_login(db, identifier)
 
     if user is None:
         # 关键：这里也要跑一次 bcrypt，把响应时间拉到和"密码错误"同一量级。

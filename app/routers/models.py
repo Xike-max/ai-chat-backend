@@ -8,10 +8,19 @@ from __future__ import annotations
 
 from enum import Enum
 
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/models", tags=["模型"])
+from app.deps import get_current_user
+
+# 白名单本身不算敏感数据，但仍然要求登录：一是它直接暴露"我们支持哪些上游"，
+# 二是所有业务接口统一要求 Bearer 之后，前端拦截器只需要处理一种情况
+# （没有 token 就跳登录），不需要给"部分接口匿名"再维护一份例外清单。
+router = APIRouter(
+    prefix="/models",
+    tags=["模型"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 class ModelName(str, Enum):

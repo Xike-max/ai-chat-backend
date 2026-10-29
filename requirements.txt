@@ -1,28 +1,43 @@
-fastapi==0.115.14
-uvicorn[standard]==0.34.3
-pydantic==2.10.6
-# 配置：从 .env / 环境变量读取（知识点 12 前置）
-pydantic-settings==2.7.1
-python-dotenv==1.2.4
-# ORM（知识点 8、9）
-sqlalchemy==2.0.44
-# 迁移（知识点 10）：1.14 起 autogenerate 默认 compare_type=True
-alembic==1.14.0
-# 联调脚本 scripts/call_internal.py 与测试客户端（TestClient）用
-httpx==0.28.1
+# 生产依赖与测试依赖合一（项目规模不大，拆两份只会让 CI 少装或多装）。
+# 全部钉死到精确版本：`pip install -r requirements.txt` 在任何机器、任何时间点
+# 都装出同一套。升级请一次只动一个包，并跑 pytest + scripts/smoke.sh 回归。
 
-# ---- 认证（知识点 12）----
+# ---- Web 框架 ----
+fastapi==0.115.14
+# [standard] 带 uvloop / httptools / websockets，比纯 uvicorn 快一截
+uvicorn[standard]==0.34.3
+# Pydantic v2。不要降到 1.x：schemas.py 用了 model_config / model_validate
+pydantic==2.10.6
+# 从 .env / 环境变量读配置，并在启动阶段完成类型校验
+pydantic-settings==2.7.1
+# pydantic-settings 的 .env 解析后端（不装则 .env 文件被静默忽略，配置全是默认值）
+python-dotenv==1.2.4
+
+# ---- 数据层 ----
+sqlalchemy==2.0.44
+# 1.14 起 autogenerate 默认 compare_type=True，能发现列类型变化
+alembic==1.14.0
+
+# ---- 认证 ----
 # 密码哈希：passlib 负责"多算法可演进"，bcrypt 是实际算法
+passlib[bcrypt]==1.7.4
 # bcrypt 必须钉在 4.0.1：4.1+ 移除了 passlib 1.7.4 依赖的 __about__ 属性，
 # 导入时会刷一屏 "(trapped) error reading bcrypt version" 警告；
 # 5.x 起直接不兼容（passlib 已停止维护，短期内不会修）
-passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
-# JWT 签发与校验。注意是 PyJWT，不是 python-jose / python-jose：
-# PyJWT 维护活跃、API 直觉，2.10 起会强校验 sub/jti 的类型
+# JWT 签发与校验。是 PyJWT，不是 python-jose（后者已停止维护、有 CVE 历史）。
+# 2.10 起 decode 时强校验 sub/jti 类型：int 型 sub 会直接抛错
 PyJWT==2.10.1
-# OAuth2 密码模式用表单（application/x-www-form-urlencoded）提交，
-# 没有它 OAuth2PasswordRequestForm 会让应用在启动阶段报错
+# OAuth2 密码模式用表单提交；缺它 OAuth2PasswordRequestForm 会让应用启动失败
 python-multipart==0.0.20
-# EmailStr 校验器（pydantic 在运行时按需导入，不装会在校验邮箱时抛 ImportError）
+# EmailStr 的运行时校验器（pydantic 按需导入，缺了会在校验邮箱时 ImportError）
 email-validator==2.2.0
+
+# ---- HTTP 客户端 ----
+# 3 处用途：llm.py 调上游、scripts/call_internal.py 联调、TestClient 内部
+httpx==0.28.1
+
+# ---- 测试 ----
+# 只装 pytest：TestClient 来自 fastapi，断言用原生 assert。
+# 不引 pytest-mock / pytest-asyncio —— 依赖越少，测试越不容易因插件版本冲突集体挂掉
+pytest==8.3.4

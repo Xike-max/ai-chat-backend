@@ -17,11 +17,18 @@
 本文件只演示 3、4 里没有现成入口的那几个。
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.deps import get_current_user
 from app.errors import ConflictError, ForbiddenError, NotFoundError
 
-router = APIRouter(prefix="/demo/errors", tags=["错误格式演示"])
+# 演示接口也要鉴权：它虽然不读业务数据，但能主动制造 500/错误日志，
+# 匿名可打等于给外部留了一个"免费的错误率制造器"。开发时先登录拿 token 再打。
+router = APIRouter(
+    prefix="/demo/errors",
+    tags=["错误格式演示"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("/boom", summary="故意抛未捕获异常，演示 500 兜底")

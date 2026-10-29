@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app import __version__
 
-router = APIRouter()
+router = APIRouter(tags=["健康检查"])
 
 
 class HealthResponse(BaseModel):

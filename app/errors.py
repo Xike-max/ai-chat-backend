@@ -33,6 +33,7 @@
 少了这个处理器，前端又会拿到裸的 {"detail": "Not Found"}。
 """
 
+import time
 import uuid
 from http import HTTPStatus
 from typing import Any
@@ -42,7 +43,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.logging_conf import logger
+from app.logging_conf import (
+    PROCESS_TIME_HEADER,
+    TRACE_ID_HEADER,
+    logger,
+    mark_exception_logged,
+    set_trace_id,
+)
 
 
 # ============================================================================
@@ -224,6 +231,32 @@ def _ensure_trace_id(request: Request) -> str:
         # 写回去，让同一请求里后续的日志与响应拿到同一个 id
         request.state.trace_id = trace_id
     return str(trace_id)
+
+
+def _trace_headers(request: Request, trace_id: str) -> dict[str, str]:
+    """构造 500 响应需要的追踪头。
+
+    为什么要在这里单独加一次头，而不是交给中间件：
+    **500 是由 Starlette 最外层的 ServerErrorMiddleware 生成的**，
+    它在整条中间件链的外面，所以我们的 TraceMiddleware 根本没机会
+    "看着"这个响应经过 —— 它只看到异常往上冒。结果就是普通响应都带
+    X-Trace-Id，偏偏最需要它的 500 不带。
+    客户端报障时给的 id 恰好是 500 的 id，这一点必须保住。
+
+    Args:
+        request: 当前请求（中间件把开始时间放在 request.state 里）。
+        trace_id: 本次请求的追踪 id。
+
+    Returns:
+        dict[str, str]: 含 X-Trace-Id，能算出耗时时再加 X-Process-Time。
+    """
+    headers = {TRACE_ID_HEADER: trace_id}
+    # 中间件在入口写了 request_start；没有就说明连中间件都没跑到，
+    # 这时不编造耗时（宁可少一个头，也不要给一个假数字）
+    start = getattr(request.state, "request_start", None)
+    if start is not None:
+        headers[PROCESS_TIME_HEADER] = f"{(time.perf_counter() - start) * 1000:.1f}ms"
+    return headers
 
 
 def _http_phrase(status_code: int) -> str:
@@ -560,20 +593,32 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
         另一个必须知道的细节：500 是由 Starlette 最外层的 ServerErrorMiddleware
         生成的，它在发完响应后**仍会把异常重新抛出**给 ASGI 服务器，
-        所以 uvicorn 的控制台上还会看到一次 "Exception in ASGI application"。
-        这是正常现象，不是你的处理器没生效。
+        uvicorn 接住后会再打一条 "Exception in ASGI application" + 同一份堆栈。
+        这条重复日志被 logging_conf 里的 DropDuplicateASGIErrorFilter 丢掉了
+        （它只丢"确实已经记录过"的那种），所以控制台上一次 500 只会看到一份栈。
     """
     trace_id = _ensure_trace_id(request)
 
+    # 必须**重新绑一次** contextvar。原因是一个很容易踩的时序问题：
+    # 这个处理器跑在最外层 ServerErrorMiddleware 里，而 TraceMiddleware 在
+    # 异常向上冒泡时会先执行自己的 finally —— 那里的 reset_trace_id 已经把
+    # 上下文里的 id 清掉了。结果是：访问日志那条 id 正确，偏偏最关键的这一条
+    # 堆栈日志显示 "-"，客户端拿着 id 报障时反而对不上。
+    set_trace_id(trace_id)
+
     # logger.exception = ERROR 级别 + 自动附带当前异常的完整堆栈。
-    # 带上 method/path/trace_id，是为了让"一条 500 日志"自带定位线索。
+    # 带上 method/path，是为了让"一条 500 日志"自带定位线索。
+    # trace_id 不用手写：TraceIdFilter 会从 contextvar 里取出来，
+    # 由 formatter 统一拼进每一行（手写一次就会在日志里出现两遍同一个 id）。
     # 注意：不要在这里打请求体或请求头 —— 里面可能有密码和 token。
     logger.exception(
-        "未捕获异常 | trace_id=%s | %s %s",
-        trace_id,
+        "未捕获异常 | %s %s",
         request.method,
         request.url.path,
     )
+    # 告诉日志层"这次异常已经记过了"：uvicorn 接住重新抛出的异常时还想再打
+    # 一份同样的堆栈，DropDuplicateASGIErrorFilter 会据此把重复的那份丢掉。
+    mark_exception_logged()
 
     return JSONResponse(
         status_code=500,
@@ -584,6 +629,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
             # 前端永远只解析 error.code / error.message / error.detail 三个键
             {"trace_id": trace_id},
         ),
+        # 补上追踪头（原因见 _trace_headers 的说明）
+        headers=_trace_headers(request, trace_id),
     )
 
 

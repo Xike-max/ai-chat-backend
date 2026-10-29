@@ -184,6 +184,39 @@ class ChatRequest(BaseModel):
         }
 
 
+class ChatIn(BaseModel):
+    """会话内续聊的请求体（POST /conversations/{id}/chat）。
+
+    和 `ChatRequest` 的区别：会话 id 在路径里，body 里不再重复传
+    `conversation_id` —— 同一份数据出现在两个地方，迟早会出现
+    "路径写 1、body 写 2"这种谁也说不清该信哪个的请求。
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"message": "用一句话解释什么是向量数据库", "model": "deepseek-chat"}
+        }
+    )
+
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="用户本轮输入，1~4000 字符",
+        examples=["用一句话解释什么是向量数据库"],
+    )
+    model: str = Field(
+        default="deepseek-chat",
+        min_length=1,
+        max_length=64,
+        description="模型标识，如 deepseek-chat / qwen-plus / gpt-4o-mini",
+        examples=["deepseek-chat"],
+    )
+    options: ChatOptions | None = Field(
+        default=None,
+        description="采样参数；不传则用服务端默认值（temperature=0.7、max_tokens=1024）",
+    )
+
+
 class ConversationCreate(BaseModel):
     """新建会话的请求体（POST /conversations 的 body）。"""
 
@@ -376,6 +409,37 @@ class ConversationDetail(ConversationOut):
     model_config = ConfigDict(from_attributes=True)
 
     messages: list[MessageOut] = Field(default_factory=list, description="按时间正序的消息列表")
+
+
+class ChatOut(BaseModel):
+    """一次对话的响应体（POST /conversations/{id}/chat 的返回值）。
+
+    同时返回 `reply`（纯文本，前端直接渲染）和 `message`（落库后的完整消息，
+    带 id 与 created_at）：前者省掉前端解包，后者让前端能把这条消息
+    和后续分页拉到的历史消息按同一个 id 去重。
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "conversation_id": 1,
+                "reply": "向量数据库是专门存储和检索高维向量的数据库。",
+                "model": "deepseek-chat",
+                "message": {
+                    "id": 2,
+                    "role": "assistant",
+                    "content": "向量数据库是专门存储和检索高维向量的数据库。",
+                    "tokens": 0,
+                    "created_at": "2026-10-29T11:45:00Z",
+                },
+            }
+        }
+    )
+
+    conversation_id: int = Field(description="本次对话所属会话 ID")
+    reply: str = Field(description="模型回复正文，等同于 message.content")
+    model: str = Field(description="本次使用的模型标识")
+    message: MessageOut = Field(description="已落库的 assistant 消息")
 
 
 class UserOut(BaseModel):

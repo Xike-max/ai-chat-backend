@@ -11,24 +11,26 @@
 from fastapi import APIRouter
 
 from app.deps import CurrentUser
-from app.models import User
 from app.schemas import UserOut
 
 router = APIRouter(prefix="/users", tags=["用户"])
 
 
 @router.get("/me", response_model=UserOut, summary="获取当前登录用户")
-async def read_current_user(user: CurrentUser) -> User:
+async def read_current_user(user: CurrentUser) -> UserOut:
     """返回当前 token 对应的用户资料。
+
+    收窄返回值类型后，这个路由**不再 import ORM 模型**：它只知道"进一个
+    已鉴权的用户，出一个对外的用户视图"。分层上这比 `-> User` 更干净 ——
+    路由层不持有 ORM 类，也就没法顺手 `user.hashed_password` 或
+    `db.query(User)`。
 
     Args:
         user: 由 get_current_user 依赖注入的 ORM 对象；token 无效、
             用户不存在或已被禁用时，依赖内部已经抛了 401，走不到这里。
 
     Returns:
-        User: 直接返回 ORM 对象即可 —— response_model=UserOut 会按字段白名单
-        序列化，hashed_password 这类字段不会被带出去。
-        换句话说，**安全边界在响应模型上，不在路由函数里**：即使有人在这里
-        `return user` 时手滑多加了字段，也不会泄露。
+        UserOut: 按字段白名单序列化后的用户视图（不含 hashed_password）。
+        安全边界在响应模型上，不在路由函数里。
     """
-    return user
+    return UserOut.model_validate(user)

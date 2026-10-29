@@ -1,0 +1,18 @@
+# 统一换行符，避免 Windows 提交的 CRLF 让 Linux/macOS 上的脚本直接跑不起来。
+# .sh 必须强制 LF：CRLF 的 shebang 是 "/bin/sh\r"，Linux 会报
+# "bad interpreter: /bin/sh^M"，而这种错误在 Windows 上完全复现不出来。
+
+* text=auto
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.ini  text eol=lf
+*.txt  text eol=lf
+*.json text eol=lf
+
+# 二进制文件不做换行转换，否则会被 Git 改坏
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.db   binary

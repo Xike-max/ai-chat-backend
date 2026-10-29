@@ -35,3 +35,6 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 冒烟脚本的临时库 / 日志 / 响应体
+.smoke*
