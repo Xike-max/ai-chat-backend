@@ -38,3 +38,6 @@ Thumbs.db
 
 # 冒烟脚本的临时库 / 日志 / 响应体
 .smoke*
+
+# 前端方案文档：只在本机保留，不入库
+/docs/frontend.md
