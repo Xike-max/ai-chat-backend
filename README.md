@@ -36,6 +36,19 @@ uvicorn app.main:app --port 8000
 想先在本地跑通"对话"而不配置 API Key？把 `.env` 里 `LLM_MOCK=true` 打开（或启动时加
 `LLM_MOCK=true uvicorn ...`），模型会变成回显，其余链路完全真实。
 
+### 前端验收台
+
+`web/` 下是一个 React 前端验收台，用于直观检查后端能力（登录注册、会话、对话、错误契约、请求日志）。
+
+```bash
+cd web
+npm install
+npm run dev    # 打开 http://localhost:5173
+```
+
+它通过 Vite 代理把 `/api`、`/internal` 转发到 `127.0.0.1:8000`，走同源请求，**后端 CORS 无需改动**。
+详细说明见 [`web/README.md`](web/README.md)。
+
 ## 架构说明
 
 分层的唯一目的：让"改一处"只影响一处。依赖方向永远单向向下，**下面不许反过来 import 上面**。
@@ -78,8 +91,9 @@ app/
   llm.py             OpenAI 兼容客户端 + MockLLMClient
   routers/           health / auth / users / conversations / chat / models / internal / root
 alembic/             数据库迁移
-scripts/             call_internal.py（内部接口联调）、smoke.sh（端到端冒烟）
+scripts/             call_internal.py（内部接口联调）、smoke.sh（端到端冒烟）、启动脚本
 tests/               pytest 用例（内存库 + 假模型）
+web/                 React 前端验收台（Vite + TS，见 web/README.md）
 ```
 
 ## 接口一览
